@@ -366,57 +366,108 @@ with tab3:
         st.success("No governance violation (brand % ok).")
 
 # ------------------------
-# Tab 4: Experimentation Studio (with Synthetic option)
+## ------------------------
+# Tab 4: Experimentation Studio
 # ------------------------
 with tab4:
     st.header("Experimentation Studio")
-    st.markdown("Design holdouts or scale tests. Get DMA recommendations, run synthetic causal analyses, review candidate designs, and export a payload to activate (prototype).")
+    st.markdown(
+        "Design holdout or scale tests, or run synthetic causal analysis when RCT is not feasible."
+    )
 
     if portfolio.empty:
         st.info("No campaigns selected in scope. Pick campaigns in sidebar.")
     else:
-        selected_campaign = st.selectbox("Select campaign to validate", options=portfolio["campaign"].tolist(), key="exp_campaign")
-        c_row = portfolio[portfolio["campaign"]==selected_campaign].iloc[0]
+        selected_campaign = st.selectbox(
+            "Select campaign to validate",
+            options=portfolio["campaign"].tolist(),
+            key="exp_campaign"
+        )
 
-        # Mode selector: Controlled vs Synthetic
-        mode = st.radio("Mode", options=["Controlled Experiment (Holdout/Scale)","Synthetic Causal Analysis"], index=0)
+        c_row = portfolio[portfolio["campaign"] == selected_campaign].iloc[0]
 
-        if mode.startswith("Controlled"):
-            test_type = st.radio("Test type", options=["Holdout (geo holdout)","Scale (spend ramp)"], index=0)
+        # -------------------------
+        # Mode Selection
+        # -------------------------
+        mode = st.radio(
+            "Mode",
+            options=[
+                "Controlled Experiment (Holdout / Scale)",
+                "Synthetic Causal Analysis"
+            ],
+            index=0
+        )
 
-            st.markdown("**DMA pool (sample simulated DMAs)**")
+        # ======================================================
+        # CONTROLLED EXPERIMENT MODE
+        # ======================================================
+        if mode == "Controlled Experiment (Holdout / Scale)":
+
+            test_type = st.radio(
+                "Test Type",
+                options=["Holdout (Geo Holdout)", "Scale (Spend Ramp)"],
+                index=0
+            )
+
+            st.markdown("### DMA Pool (Simulated)")
             dmas_df = sample_dmas.copy()
-            st.dataframe(dmas_df, width=700, height=200)
+            st.dataframe(dmas_df, height=200)
 
-            st.markdown("**Recommended candidate designs**")
-            avg_order_value = st.number_input("Assumed avg order value ($)", value=50.0, key="exp_aov2")
-            conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="exp_conv2")
+            st.markdown("### Recommended Candidate Designs")
 
-            candidates = recommend_test_designs(dmas_df, campaign_spend=c_row["spend"], avg_order_value=avg_order_value, conv_rate=conv_rate)
-            cand_df = pd.DataFrame(candidates)[["name","size","dmas","n","mde_pct","est_conv_total"]]
+            avg_order_value = st.number_input(
+                "Assumed Avg Order Value ($)",
+                value=50.0,
+                key="exp_aov"
+            )
+
+            conv_rate = st.number_input(
+                "Baseline Conversion Rate (decimal)",
+                value=0.01,
+                key="exp_conv"
+            )
+
+            candidates = recommend_test_designs(
+                dmas_df,
+                campaign_spend=c_row["spend"],
+                avg_order_value=avg_order_value,
+                conv_rate=conv_rate
+            )
+
+            cand_df = pd.DataFrame(candidates)[
+                ["name", "size", "dmas", "n", "mde_pct", "est_conv_total"]
+            ]
+
             st.table(cand_df)
 
-            # DMA selection safe pattern
-            st.markdown("**Customize DMAs**")
+            # -------------------------
+            # SAFE DMA SELECTION
+            # -------------------------
+            st.markdown("### Customize DMAs")
+
             dmas = dmas_df["dma"].tolist()
             preselected = dmas[:5]
+
+            # Ensure default BEFORE widget creation
             current_default = st.session_state.get("chosen_dmas", preselected)
 
             chosen_dmas = st.multiselect(
-                "Choose treatment DMAs (pick some or use candidate)",
+                "Choose treatment DMAs",
                 options=dmas,
                 default=current_default,
                 key="chosen_dmas"
             )
 
             excluded_dmas = st.multiselect(
-                "Exclude DMAs (optional)",
+                "Exclude DMAs",
                 options=dmas,
                 default=[],
                 key="excluded_dmas"
             )
 
-            chosen_effective = [d for d in chosen_dmas if d not in excluded_dmas]
+            chosen_effective = [
+                d for d in chosen_dmas if d not in excluded_dmas
+            ]
 
             chosen_design = st.radio(
                 "Pick candidate design or custom",
@@ -426,101 +477,133 @@ with tab4:
             )
 
             if chosen_design != "Custom":
-                pick = next((c for c in candidates if c["name"]==chosen_design), None)
+                pick = next(
+                    (c for c in candidates if c["name"] == chosen_design),
+                    None
+                )
+
                 if pick:
                     st.write("Candidate details:")
                     st.write(pick)
-                    if st.button(f"Apply '{chosen_design}' candidate to DMAs"):
+
+                    if st.button(
+                        f"Apply '{chosen_design}' candidate"
+                    ):
                         st.session_state["chosen_dmas"] = pick["dmas"]
                         st.rerun()
 
-            if test_type.startswith("Holdout"):
-                treatment_pct = st.slider("Treatment percent of normal exposure (e.g., 90 means 90% of normal)", 50, 100, 90)
+            # -------------------------
+            # Test Configuration
+            # -------------------------
+            if test_type == "Holdout (Geo Holdout)":
+                treatment_pct = st.slider(
+                    "Treatment % of Normal Exposure",
+                    50, 100, 90
+                )
             else:
-                treatment_pct = st.slider("Spend increase percent in treatment DMAs (e.g., 20 means +20%)", 5, 200, 25)
+                treatment_pct = st.slider(
+                    "Spend Increase % in Treatment DMAs",
+                    5, 200, 25
+                )
 
-            start_dt = st.date_input("Start date", value=date.today() + timedelta(days=7))
-            duration = st.number_input("Duration (days)", min_value=7, max_value=90, value=28)
+            start_dt = st.date_input(
+                "Start Date",
+                value=date.today() + timedelta(days=7)
+            )
+
+            duration = st.number_input(
+                "Duration (days)",
+                min_value=7,
+                max_value=90,
+                value=28
+            )
+
             end_dt = start_dt + timedelta(days=int(duration))
 
-            if len(chosen_effective) == 0:
-                st.warning("No DMAs selected for treatment — choose at least one.")
-            else:
-                chosen_df = dmas_df[dmas_df["dma"].isin(chosen_effective)].copy()
-                chosen_df["est_conv"] = ((c_row["spend"] * chosen_df["spend_share"]) / avg_order_value) * conv_rate * (duration/28.0)
+            if len(chosen_effective) > 0:
+                chosen_df = dmas_df[
+                    dmas_df["dma"].isin(chosen_effective)
+                ].copy()
+
+                chosen_df["est_conv"] = (
+                    (c_row["spend"] * chosen_df["spend_share"])
+                    / avg_order_value
+                ) * conv_rate * (duration / 28.0)
+
                 total_n = max(1, int(chosen_df["est_conv"].sum()))
-                mde = detectable_lift_proportion(conv_rate, total_n)
-                st.markdown("**Selected design summary**")
+
+                mde = detectable_lift_proportion(
+                    conv_rate, total_n
+                )
+
+                st.markdown("### Design Summary")
                 st.write(f"Treatment DMAs: {chosen_effective}")
-                st.write(f"Estimated conversions in duration (treatment): {total_n}")
-                st.write(f"Estimated MDE (approx): ±{round(mde*100,2)}%")
+                st.write(f"Estimated Conversions: {total_n}")
+                st.write(
+                    f"Estimated MDE: ±{round(mde * 100, 2)}%"
+                )
+            else:
+                st.warning(
+                    "Select at least one DMA for treatment."
+                )
 
-            st.markdown("---")
-            st.markdown("**Export payload / Simulate activation**")
-            notes = st.text_area("Notes (optional)", value="Prototype activation payload")
-            payload = {
-                "campaign": selected_campaign,
-                "test_type": "holdout" if test_type.startswith("Holdout") else "scale",
-                "start_date": start_dt.isoformat(),
-                "end_date": end_dt.isoformat(),
-                "treatment_dmas": chosen_effective,
-                "excluded_dmas": excluded_dmas,
-                "treatment_pct": int(treatment_pct),
-                "duration_days": int(duration),
-                "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate},
-                "notes": notes
-            }
-            st.code(payload, language="json")
-            if st.button("Export JSON / Simulate Activate"):
-                filename = f"experiment_payload_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
-                with open(filename,"w") as f:
-                    json.dump(payload, f, indent=2)
-                st.success(f"Payload written to {filename} (this simulates activation).")
-                st.info("In production this payload would be sent to orchestration services or used to call Google Ads APIs.")
-
+        # ======================================================
+        # SYNTHETIC CAUSAL MODE
+        # ======================================================
         else:
-            # Synthetic causal mode (explicit)
-            st.markdown("### Synthetic Causal Analysis (explicit mode)")
-            causal_method = st.selectbox(
+            st.markdown("### Synthetic Causal Analysis")
+
+            method = st.selectbox(
                 "Method",
-                options=[
+                [
                     "Historical Bid/Spend Variation",
-                    "Geo-Level Cross Section (Synthetic Control)",
+                    "Geo-Level Cross Section",
                     "Time-Series Structural Model"
                 ]
             )
-            hist_window = st.selectbox("Historical window", options=["90 days","180 days","365 days"])
-            avg_order_value = st.number_input("Assumed avg order value ($)", value=50.0, key="syn_aov")
-            conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="syn_conv")
-            if st.button("Run Synthetic Causal Analysis (explicit)"):
+
+            hist_window = st.selectbox(
+                "Historical Window",
+                ["90 days", "180 days", "365 days"]
+            )
+
+            avg_order_value = st.number_input(
+                "Assumed Avg Order Value ($)",
+                value=50.0,
+                key="syn_aov"
+            )
+
+            conv_rate = st.number_input(
+                "Baseline Conversion Rate (decimal)",
+                value=0.01,
+                key="syn_conv"
+            )
+
+            if st.button("Run Synthetic Analysis"):
                 base_effect = c_row["marginal_roas"] * 0.02
                 noise = np.random.normal(0, 0.5)
                 synthetic_lift = round(base_effect + noise, 2)
-                synthetic_conf = int(max(30, min(90, 60 + np.random.randint(-15,30))))
-                st.write(f"Estimated Incremental Lift (synthetic) for {selected_campaign}: **{synthetic_lift}%**")
-                st.write(f"Model Confidence: **{synthetic_conf}%**")
+
+                synthetic_conf = int(
+                    max(30, min(90, 60 + np.random.randint(-15, 30)))
+                )
+
+                st.write(
+                    f"Estimated Incremental Lift: {synthetic_lift}%"
+                )
+
+                st.write(
+                    f"Model Confidence: {synthetic_conf}%"
+                )
+
                 if synthetic_conf < confidence_threshold:
-                    st.warning("Confidence moderate/low. Recommend controlled validation (holdout) for higher certainty.")
+                    st.warning(
+                        "Confidence moderate. Consider running controlled holdout."
+                    )
                 else:
-                    st.success("Synthetic result has acceptable confidence for directional decisions.")
-                # show recommended next steps and allow export
-                st.markdown("**Next steps**")
-                st.write("- Consider running a controlled geo holdout for validation.")
-                st.write("- If budget constrained, consider partial holdout or longer duration.")
-                payload = {
-                    "campaign": selected_campaign,
-                    "method": causal_method,
-                    "hist_window": hist_window,
-                    "synthetic_lift_pct": synthetic_lift,
-                    "synthetic_confidence_pct": synthetic_conf,
-                    "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate}
-                }
-                st.code(payload, language="json")
-                if st.button("Export synthetic result JSON"):
-                    fname = f"synthetic_result_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    with open(fname,"w") as f:
-                        json.dump(payload, f, indent=2)
-                    st.success(f"Synthetic payload written to {fname}.")
+                    st.success(
+                        "Confidence acceptable for directional decision."
+                    )
 
 # ------------------------
 # End of app
