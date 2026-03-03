@@ -379,8 +379,7 @@ with tab1:
         st.caption("This summary is heuristics-based from the prototype data. Optionally enable an OpenAI key in Streamlit secrets for full LLM answers.")
 
 # ------------------------
-# Tab 2: Measurement triangulation
-# # ------------------------
+# ------------------------
 # Tab 2: Measurement triangulation
 # ------------------------
 with tab2:
@@ -430,14 +429,11 @@ with tab2:
                 step=100.0,
                 key=f"mmm_{i}"
             )
+        # Confidence as slider per your request
         with col4:
-            conf_val = st.number_input(
+            conf_val = st.slider(
                 f"Confidence override % (0 = auto) - {r['campaign']}",
-                min_value=0,
-                max_value=100,
-                value=int(st.session_state[f"conf_{i}"]),
-                step=1,
-                key=f"conf_{i}"
+                0, 100, int(st.session_state[f"conf_{i}"]), key=f"conf_{i}"
             )
 
         # collect inputs to methods list for triangulation
@@ -453,6 +449,7 @@ with tab2:
             "marginal_roas": r["marginal_roas"]
         })
 
+    # end for loop
     methods_df = pd.DataFrame(methods)
     st.markdown("**Triangulation inputs (current)**")
     with st.expander("View triangulation inputs table"):
@@ -513,7 +510,9 @@ with tab2:
                 synthetic_conf = int(max(30, min(85, 60 + np.random.randint(-10,20))))
                 st.write(f"Campaign: **{c}** — Synthetic lift: **{synthetic_lift}%**, Confidence: **{synthetic_conf}%**")
             st.warning("Synthetic results are directional. Consider controlled validation.")
-# Tab 3: Recommendation Engine (reallocate + portfolio scale)
+
+# ------------------------
+# Tab 3: Recommendation Engine
 # ------------------------
 with tab3:
     st.header("Recommendation Engine")
@@ -523,30 +522,69 @@ with tab3:
     portfolio = build_portfolio_df(st.session_state["df_mod"])
     portfolio = portfolio[portfolio["campaign"].isin(selected_campaigns)].reset_index(drop=True)
 
-    # build rec_df (simple rules)
+    # build rec_df (improved rules: populate reason & projected_incremental)
     recs = []
+    # ensure combined_df exists (it should from triangulation); if not, empty DF
+    try:
+        tri_df = combined_df.copy()
+    except Exception:
+        tri_df = pd.DataFrame()
+
     for r in portfolio.to_dict(orient="records"):
-        tri_row = combined_df[combined_df["campaign"]==r["campaign"]]
+        # find triangulation row if present
+        tri_row = tri_df[tri_df["campaign"] == r["campaign"]]
         final_conf = int(tri_row["final_confidence"].values[0]) if not tri_row.empty else r["confidence"]
+
+        # pick the primary iROAS: triangulated if available, else marginal_roas
+        if not tri_row.empty and "triangulated_iROAS" in tri_row.columns:
+            tri_iroas = float(tri_row["triangulated_iROAS"].values[0])
+        else:
+            tri_iroas = float(r.get("marginal_roas", 0.0))
+
         action = "Hold"
-        reason = ""
+        reason = "No strong signal to change"
         projected = 0
-        if r["saturation"] > 75 and r["marginal_roas"] < r["avg_roas"]*0.6 and final_conf > 50:
+
+        # Reduce: high saturation + low marginal vs avg
+        if r["saturation"] >= 75 and r["marginal_roas"] < (r["avg_roas"] * 0.6) and final_conf >= 50:
             action = "Reduce spend"
             reason = "High saturation & low marginal ROAS"
-            projected = -round(r["spend"]*0.02,0)
-        elif r["elasticity_b"] > 0.5 and final_conf > 40:
+            # estimate reduction of 2% of spend and revenue impact using tri_iroas
+            delta_spend = int(r["spend"] * 0.02)
+            projected = -int(tri_iroas * delta_spend)
+
+        # Increase: elastic channel & reasonable confidence
+        elif r["elasticity_b"] > 0.5 and final_conf >= 40:
             action = "Increase spend"
-            reason = "Higher elasticity"
-            projected = round(r["spend"]*0.03,0)
-        recs.append({"campaign":r["campaign"], "action":action, "reason":reason, "projected_incremental":int(projected), "confidence":final_conf})
+            reason = "Higher elasticity suggested by model"
+            delta_spend = int(r["spend"] * 0.03)  # simulate adding 3%
+            projected = int(tri_iroas * delta_spend)
+
+        # Low confidence -> recommend validation
+        elif final_conf < 50:
+            action = "Validate"
+            reason = "Low measurement confidence — suggest experiment/holdout"
+            projected = 0
+
+        else:
+            action = "Hold"
+            reason = "No actionable signal; monitor"
+
+        recs.append({
+            "campaign": r["campaign"],
+            "action": action,
+            "reason": reason,
+            "projected_incremental": int(projected),
+            "confidence": final_conf
+        })
+
     rec_df = pd.DataFrame(recs)
     st.subheader("Recommendations snapshot")
     with st.expander("View recommendation table"):
         st.dataframe(rec_df, height=240)
 
     st.markdown("### Simulation type")
-    sim_type = st.radio("Choose simulation", options=["Reallocate between campaigns","Change total portfolio spend"], index=0)
+    sim_type = st.radio("Choose simulation", options=["Reallocate between campaigns","Scale total portfolio spend"], index=0)
 
     if sim_type == "Reallocate between campaigns":
         if len(portfolio) < 2:
@@ -632,8 +670,6 @@ with tab3:
     st.write(f"Contribution per order: ${contribution_per_order:.2f} — Contribution margin: {cm_pct}%")
     if use_cdp:
         st.info("First-party signals (CDP) enabled: attributed revenue shown as % of total revenue where simulated data exists.")
-
-# ------------------------
 # Tab 4: Experimentation Studio
 # # ------------------------
 # Tab 4: Experimentation Studio
