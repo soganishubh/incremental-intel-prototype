@@ -603,9 +603,6 @@ with tab3:
         st.info("First-party signals (CDP) enabled: attributed revenue shown as % of total revenue where simulated data exists.")
 
 # ------------------------
-# Tab 4: Experimentation Studio (Controlled + Synthetic)
-# ------------------------
-# ------------------------
 # Tab 4: Experimentation Studio
 # ------------------------
 with tab4:
@@ -700,30 +697,52 @@ with tab4:
                     st.write(pick)
 
             # -------------------------
-            # SAFE DMA MULTISELECT
+            # SAFE DMA MULTISELECT (robust normalization)
             # -------------------------
             st.markdown("### Customize DMAs")
 
+            # Ensure options are plain Python strings
             dmas = dmas_df["dma"].astype(str).tolist()
             preselected = dmas[:5]
 
+            # --- Normalize any prior session value (do this BEFORE creating the widget) ---
+            if "chosen_dmas" in st.session_state:
+                raw = st.session_state["chosen_dmas"]
+                # If it's already a list of strings, leave it. Otherwise coerce.
+                if not isinstance(raw, list) or any(not isinstance(x, str) for x in raw):
+                    try:
+                        coerced = [str(x) for x in raw if x is not None] if raw is not None else []
+                        # keep only valid options
+                        coerced = [x for x in coerced if x in dmas]
+                        st.session_state["chosen_dmas"] = coerced or preselected
+                    except Exception:
+                        st.session_state["chosen_dmas"] = preselected
+            else:
+                # initialize safely if missing
+                st.session_state["chosen_dmas"] = preselected
+
+            # Build default: candidate dmas (if picked) else cleaned session_state
             if pick:
                 raw_default = pick.get("dmas", [])
+                try:
+                    candidate_default = [str(x) for x in raw_default]
+                except Exception:
+                    candidate_default = []
+                candidate_default = [x for x in candidate_default if x in dmas]
+                current_default = candidate_default or st.session_state.get("chosen_dmas", preselected)
             else:
-                raw_default = st.session_state.get("chosen_dmas", preselected)
+                current_default = st.session_state.get("chosen_dmas", preselected)
 
-            # Coerce default to valid list of strings
+            # Final guard: ensure current_default is valid list[str]
             try:
-                current_default = [str(x) for x in raw_default]
+                current_default = [str(x) for x in (current_default or preselected)]
             except Exception:
                 current_default = preselected
-
-            # Filter invalid values
             current_default = [x for x in current_default if x in dmas]
-
             if not current_default:
                 current_default = preselected
 
+            # Now create the multiselect (key unchanged)
             chosen_dmas = st.multiselect(
                 "Choose treatment DMAs",
                 options=dmas,
@@ -852,6 +871,3 @@ with tab4:
                     st.success(
                         "Confidence acceptable for directional decision."
                     )
-# ------------------------
-# End of app
-# ------------------------
