@@ -182,7 +182,7 @@ agg = weighted_portfolio_metrics(portfolio)
 # ------------------------
 # Main app UI
 # ------------------------
-st.title("Adobe Incremental Intelligence Engine (Prototype)")
+st.title(" Incrementality Intelligence Engine (Prototype)")
 st.markdown("Elasticity + Triangulation + Recommendation + Experimentation CTA + Governance")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Portfolio Overview", "🔍 Triangulation", "💡 Recommendation", "🧪 Experimentation Studio"])
@@ -369,6 +369,8 @@ with tab3:
 ## ------------------------
 # Tab 4: Experimentation Studio
 # ------------------------
+# Tab 4: Experimentation Studio
+# ------------------------
 with tab4:
     st.header("Experimentation Studio")
     st.markdown(
@@ -434,66 +436,62 @@ with tab4:
                 conv_rate=conv_rate
             )
 
+            # show table of candidate designs
             cand_df = pd.DataFrame(candidates)[
                 ["name", "size", "dmas", "n", "mde_pct", "est_conv_total"]
             ]
-
             st.table(cand_df)
 
             # -------------------------
-            # SAFE DMA SELECTION
+            # Candidate selection first (precompute default for multiselect)
+            # -------------------------
+            chosen_design = st.radio(
+                "Pick candidate design or Custom",
+                options=[c["name"] for c in candidates] + ["Custom"],
+                index=1,
+                key="candidate_radio"
+            )
+
+            pick = None
+            if chosen_design != "Custom":
+                pick = next((c for c in candidates if c["name"] == chosen_design), None)
+                if pick:
+                    st.write("Candidate details:")
+                    st.write(pick)
+
+            # -------------------------
+            # SAFE DMA SELECTION (multiselect uses computed default)
             # -------------------------
             st.markdown("### Customize DMAs")
-
             dmas = dmas_df["dma"].tolist()
             preselected = dmas[:5]
 
-            # Ensure default BEFORE widget creation
-            current_default = st.session_state.get("chosen_dmas", preselected)
+            # Compute default BEFORE creating the multiselect widget:
+            # - If a candidate was chosen, use candidate DMAs as the default.
+            # - Otherwise use previous session_state default or preselected.
+            if pick:
+                current_default = pick["dmas"]
+            else:
+                current_default = st.session_state.get("chosen_dmas", preselected)
 
             chosen_dmas = st.multiselect(
-                "Choose treatment DMAs",
+                "Choose treatment DMAs (you can edit after candidate prefill)",
                 options=dmas,
                 default=current_default,
                 key="chosen_dmas"
             )
 
             excluded_dmas = st.multiselect(
-                "Exclude DMAs",
+                "Exclude DMAs (optional)",
                 options=dmas,
                 default=[],
                 key="excluded_dmas"
             )
 
-            chosen_effective = [
-                d for d in chosen_dmas if d not in excluded_dmas
-            ]
-
-            chosen_design = st.radio(
-                "Pick candidate design or custom",
-                options=[c["name"] for c in candidates] + ["Custom"],
-                index=1,
-                key="candidate_radio"
-            )
-
-            if chosen_design != "Custom":
-                pick = next(
-                    (c for c in candidates if c["name"] == chosen_design),
-                    None
-                )
-
-                if pick:
-                    st.write("Candidate details:")
-                    st.write(pick)
-
-                    if st.button(
-                        f"Apply '{chosen_design}' candidate"
-                    ):
-                        st.session_state["chosen_dmas"] = pick["dmas"]
-                        st.rerun()
+            chosen_effective = [d for d in chosen_dmas if d not in excluded_dmas]
 
             # -------------------------
-            # Test Configuration
+            # Test config
             # -------------------------
             if test_type == "Holdout (Geo Holdout)":
                 treatment_pct = st.slider(
@@ -546,6 +544,30 @@ with tab4:
                 st.warning(
                     "Select at least one DMA for treatment."
                 )
+
+            # Export payload / simulate activation
+            st.markdown("---")
+            st.markdown("**Export payload / Simulate activation**")
+            notes = st.text_area("Notes (optional)", value="Prototype activation payload")
+            payload = {
+                "campaign": selected_campaign,
+                "test_type": "holdout" if test_type.startswith("Holdout") else "scale",
+                "start_date": start_dt.isoformat(),
+                "end_date": end_dt.isoformat(),
+                "treatment_dmas": chosen_effective,
+                "excluded_dmas": excluded_dmas,
+                "treatment_pct": int(treatment_pct),
+                "duration_days": int(duration),
+                "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate},
+                "notes": notes
+            }
+            st.code(payload, language="json")
+            if st.button("Export JSON / Simulate Activate"):
+                filename = f"experiment_payload_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                with open(filename,"w") as f:
+                    json.dump(payload, f, indent=2)
+                st.success(f"Payload written to {filename} (this simulates activation).")
+                st.info("In production this payload would be sent to orchestration services or used to call Google Ads APIs.")
 
         # ======================================================
         # SYNTHETIC CAUSAL MODE
@@ -605,6 +627,22 @@ with tab4:
                         "Confidence acceptable for directional decision."
                     )
 
+                # export synthetic result
+                st.markdown("---")
+                synth_payload = {
+                    "campaign": selected_campaign,
+                    "method": method,
+                    "hist_window": hist_window,
+                    "synthetic_lift_pct": synthetic_lift,
+                    "synthetic_confidence_pct": synthetic_conf,
+                    "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate}
+                }
+                st.code(synth_payload, language="json")
+                if st.button("Export synthetic result JSON"):
+                    fname = f"synthetic_result_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(fname,"w") as f:
+                        json.dump(synth_payload, f, indent=2)
+                    st.success(f"Synthetic payload written to {fname}.")
 # ------------------------
 # End of app
 # ------------------------
