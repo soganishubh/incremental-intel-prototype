@@ -1,0 +1,21 @@
+{
+  "campaign": "NonBrand US",
+  "test_type": "holdout",
+  "start_date": "2026-03-10",
+  "end_date": "2026-04-07",
+  "treatment_dmas": [
+    "NY",
+    "LA",
+    "Chicago",
+    "Dallas",
+    "Atlanta"
+  ],
+  "excluded_dmas": [],
+  "treatment_pct": 90,
+  "duration_days": 28,
+  "assumptions": {
+    "avg_order_value": 50.0,
+    "baseline_conv_rate": 0.01
+  },
+  "notes": "Prototype activation payload"
+}
