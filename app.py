@@ -380,34 +380,67 @@ with tab1:
 
 # ------------------------
 # Tab 2: Measurement triangulation
+# # ------------------------
+# Tab 2: Measurement triangulation
 # ------------------------
 with tab2:
     st.header("Measurement triangulation — reconcile attributed, experiments, and MMM")
-    st.markdown("Provide or override values from different measurement sources.")
+    st.markdown("Provide or override values from different measurement sources. All attribution values are labeled as **Attributed**.")
 
     methods = []
-    # We'll populate inputs per campaign; use safe session_state defaults
+    # Plain numeric inputs (no +/-). Prepopulate when auto_pop=True.
     for i, r in enumerate(portfolio.to_dict(orient="records")):
         st.markdown(f"**{r['campaign']}**")
         col1, col2, col3, col4 = st.columns([2,2,2,1])
+
+        # sensible auto-populated defaults (simulated)
         default_att = float(round(r["spend"] * (r["avg_roas"] * 0.05), 0)) if r["avg_roas"]>0 else 0.0
         default_exp = float(round(r["spend"] * (0.01 if r["has_experiment"] else 0.02), 0))
         default_mmm = float(round(r["spend"] * (r["mmm_share"] * 0.04 + 0.01), 0))
+        default_conf = 0
 
+        # initialize session state defaults (only if not present)
         st.session_state.setdefault(f"att_{i}", default_att if auto_pop else 0.0)
         st.session_state.setdefault(f"exp_{i}", default_exp if auto_pop else 0.0)
         st.session_state.setdefault(f"mmm_{i}", default_mmm if auto_pop else 0.0)
-        st.session_state.setdefault(f"conf_{i}", 0)
+        st.session_state.setdefault(f"conf_{i}", default_conf)
 
+        # Plain numeric inputs (no ±)
         with col1:
-            att_val = st.number_input(f"Attributed revenue ($) - {r['campaign']}", value=float(st.session_state[f"att_{i}"]), key=f"att_{i}")
+            att_val = st.number_input(
+                f"Attributed revenue ($) - {r['campaign']}",
+                min_value=0.0,
+                value=float(st.session_state[f"att_{i}"]),
+                step=100.0,
+                key=f"att_{i}"
+            )
         with col2:
-            exp_val = st.number_input(f"Experiment lift ($) - {r['campaign']}", value=float(st.session_state[f"exp_{i}"]), key=f"exp_{i}")
+            exp_val = st.number_input(
+                f"Experiment lift ($) - {r['campaign']}",
+                min_value=0.0,
+                value=float(st.session_state[f"exp_{i}"]),
+                step=100.0,
+                key=f"exp_{i}"
+            )
         with col3:
-            mmm_val = st.number_input(f"MMM-modeled incremental ($) - {r['campaign']}", value=float(st.session_state[f"mmm_{i}"]), key=f"mmm_{i}")
+            mmm_val = st.number_input(
+                f"MMM-modeled incremental ($) - {r['campaign']}",
+                min_value=0.0,
+                value=float(st.session_state[f"mmm_{i}"]),
+                step=100.0,
+                key=f"mmm_{i}"
+            )
         with col4:
-            conf_val = st.slider(f"Confidence override % (0 = auto) - {r['campaign']}", 0, 100, int(st.session_state[f"conf_{i}"]), key=f"conf_{i}")
+            conf_val = st.number_input(
+                f"Confidence override % (0 = auto) - {r['campaign']}",
+                min_value=0,
+                max_value=100,
+                value=int(st.session_state[f"conf_{i}"]),
+                step=1,
+                key=f"conf_{i}"
+            )
 
+        # collect inputs to methods list for triangulation
         methods.append({
             "campaign": r["campaign"],
             "attributed": float(att_val),
@@ -480,8 +513,6 @@ with tab2:
                 synthetic_conf = int(max(30, min(85, 60 + np.random.randint(-10,20))))
                 st.write(f"Campaign: **{c}** — Synthetic lift: **{synthetic_lift}%**, Confidence: **{synthetic_conf}%**")
             st.warning("Synthetic results are directional. Consider controlled validation.")
-
-# ------------------------
 # Tab 3: Recommendation Engine (reallocate + portfolio scale)
 # ------------------------
 with tab3:
@@ -604,124 +635,62 @@ with tab3:
 
 # ------------------------
 # Tab 4: Experimentation Studio
+# # ------------------------
+# Tab 4: Experimentation Studio
 # ------------------------
 with tab4:
     st.header("Experimentation Studio")
-    st.markdown(
-        "Design holdout or scale tests, or run synthetic causal analysis when RCT is not feasible."
-    )
+    st.markdown("Design holdout or scale tests, or run synthetic causal analysis when RCT is not feasible. This module helps recommend DMAs and compute MDEs.")
 
     if portfolio.empty:
         st.info("No campaigns selected in scope. Pick campaigns in sidebar.")
     else:
-        selected_campaign = st.selectbox(
-            "Select campaign to validate",
-            options=portfolio["campaign"].tolist(),
-            key="exp_campaign"
-        )
+        selected_campaign = st.selectbox("Select campaign to validate", options=portfolio["campaign"].tolist(), key="exp_campaign")
+        c_row = portfolio[portfolio["campaign"]==selected_campaign].iloc[0]
 
-        c_row = portfolio[portfolio["campaign"] == selected_campaign].iloc[0]
+        mode = st.radio("Mode", options=["Controlled Experiment (Holdout / Scale)","Synthetic Causal Analysis"], index=0)
 
-        mode = st.radio(
-            "Mode",
-            options=[
-                "Controlled Experiment (Holdout / Scale)",
-                "Synthetic Causal Analysis"
-            ],
-            index=0
-        )
-
-        # ======================================================
-        # CONTROLLED EXPERIMENT MODE
-        # ======================================================
-        if mode == "Controlled Experiment (Holdout / Scale)":
-
-            test_type = st.radio(
-                "Test Type",
-                options=["Holdout (Geo Holdout)", "Scale (Spend Ramp)"],
-                index=0
-            )
-
-            st.markdown("### DMA Pool (Simulated)")
+        if mode.startswith("Controlled"):
+            test_type = st.radio("Test type", options=["Holdout (Geo Holdout)","Scale (Spend Ramp)"], index=0)
+            st.markdown("**DMA pool (simulated)**")
             dmas_df = sample_dmas.copy()
-
-            # Ensure DMA values are clean strings
             dmas_df["dma"] = dmas_df["dma"].astype(str)
+            st.dataframe(dmas_df, width=700, height=200)
 
-            st.dataframe(dmas_df, height=200)
-
-            st.markdown("### Recommended Candidate Designs")
-
-            avg_order_value = st.number_input(
-                "Assumed Avg Order Value ($)",
-                value=50.0,
-                key="exp_aov"
-            )
-
-            conv_rate = st.number_input(
-                "Baseline Conversion Rate (decimal)",
-                value=0.01,
-                key="exp_conv"
-            )
-
-            candidates = recommend_test_designs(
-                dmas_df,
-                campaign_spend=c_row["spend"],
-                avg_order_value=avg_order_value,
-                conv_rate=conv_rate
-            )
-
-            cand_df = pd.DataFrame(candidates)[
-                ["name", "size", "dmas", "n", "mde_pct", "est_conv_total"]
-            ]
+            st.markdown("**Recommended candidate designs**")
+            avg_order_value = st.number_input("Assumed avg order value ($)", value= aov if 'aov' in locals() else 50.0, key="exp_aov2")
+            conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="exp_conv2")
+            candidates = recommend_test_designs(dmas_df, campaign_spend=c_row["spend"], avg_order_value=avg_order_value, conv_rate=conv_rate)
+            cand_df = pd.DataFrame(candidates)[["name","size","dmas","n","mde_pct","est_conv_total"]]
             st.table(cand_df)
 
-            # -------------------------
-            # Candidate selection first
-            # -------------------------
-            chosen_design = st.radio(
-                "Pick candidate design or Custom",
-                options=[c["name"] for c in candidates] + ["Custom"],
-                index=1,
-                key="candidate_radio"
-            )
-
+            # Candidate radio precomputes default
+            chosen_design = st.radio("Pick candidate design or Custom", options=[c["name"] for c in candidates] + ["Custom"], index=1, key="candidate_radio")
             pick = None
             if chosen_design != "Custom":
-                pick = next(
-                    (c for c in candidates if c["name"] == chosen_design),
-                    None
-                )
+                pick = next((c for c in candidates if c["name"]==chosen_design), None)
                 if pick:
                     st.write("Candidate details:")
                     st.write(pick)
 
-            # -------------------------
-            # SAFE DMA MULTISELECT (robust normalization)
-            # -------------------------
-            st.markdown("### Customize DMAs")
-
-            # Ensure options are plain Python strings
+            # SAFE DMA handling: normalize and clean session_state BEFORE widget creation
+            st.markdown("**Customize DMAs**")
             dmas = dmas_df["dma"].astype(str).tolist()
             preselected = dmas[:5]
 
-            # --- Normalize any prior session value (do this BEFORE creating the widget) ---
+            # normalize prior session value if present
             if "chosen_dmas" in st.session_state:
                 raw = st.session_state["chosen_dmas"]
-                # If it's already a list of strings, leave it. Otherwise coerce.
                 if not isinstance(raw, list) or any(not isinstance(x, str) for x in raw):
                     try:
                         coerced = [str(x) for x in raw if x is not None] if raw is not None else []
-                        # keep only valid options
                         coerced = [x for x in coerced if x in dmas]
                         st.session_state["chosen_dmas"] = coerced or preselected
                     except Exception:
                         st.session_state["chosen_dmas"] = preselected
             else:
-                # initialize safely if missing
                 st.session_state["chosen_dmas"] = preselected
 
-            # Build default: candidate dmas (if picked) else cleaned session_state
             if pick:
                 raw_default = pick.get("dmas", [])
                 try:
@@ -733,7 +702,6 @@ with tab4:
             else:
                 current_default = st.session_state.get("chosen_dmas", preselected)
 
-            # Final guard: ensure current_default is valid list[str]
             try:
                 current_default = [str(x) for x in (current_default or preselected)]
             except Exception:
@@ -742,132 +710,103 @@ with tab4:
             if not current_default:
                 current_default = preselected
 
-            # Now create the multiselect (key unchanged)
-            chosen_dmas = st.multiselect(
-                "Choose treatment DMAs",
-                options=dmas,
-                default=current_default,
-                key="chosen_dmas"
-            )
+            chosen_dmas = st.multiselect("Choose treatment DMAs (you can edit after candidate prefill)", options=dmas, default=current_default, key="chosen_dmas")
+            excluded_dmas = st.multiselect("Exclude DMAs (optional)", options=dmas, default=[], key="excluded_dmas")
+            chosen_effective = [d for d in chosen_dmas if d not in excluded_dmas]
 
-            excluded_dmas = st.multiselect(
-                "Exclude DMAs (optional)",
-                options=dmas,
-                default=[],
-                key="excluded_dmas"
-            )
-
-            chosen_effective = [
-                d for d in chosen_dmas if d not in excluded_dmas
-            ]
-
-            # -------------------------
-            # Test configuration
-            # -------------------------
-            if test_type == "Holdout (Geo Holdout)":
-                treatment_pct = st.slider(
-                    "Treatment % of Normal Exposure",
-                    50, 100, 90
-                )
+            if test_type.startswith("Holdout"):
+                treatment_pct = st.slider("Treatment percent of normal exposure (e.g., 90 means 90% of normal)", 50, 100, 90)
             else:
-                treatment_pct = st.slider(
-                    "Spend Increase % in Treatment DMAs",
-                    5, 200, 25
-                )
+                treatment_pct = st.slider("Spend increase percent in treatment DMAs (e.g., 20 means +20%)", 5, 200, 25)
 
-            start_dt = st.date_input(
-                "Start Date",
-                value=date.today() + timedelta(days=7)
-            )
-
-            duration = st.number_input(
-                "Duration (days)",
-                min_value=7,
-                max_value=90,
-                value=28
-            )
-
+            start_dt = st.date_input("Start date", value=date.today() + timedelta(days=7))
+            duration = st.number_input("Duration (days)", min_value=7, max_value=90, value=28)
             end_dt = start_dt + timedelta(days=int(duration))
 
-            if len(chosen_effective) > 0:
-                chosen_df = dmas_df[
-                    dmas_df["dma"].isin(chosen_effective)
-                ].copy()
-
-                chosen_df["est_conv"] = (
-                    (c_row["spend"] * chosen_df["spend_share"])
-                    / avg_order_value
-                ) * conv_rate * (duration / 28.0)
-
-                total_n = max(1, int(chosen_df["est_conv"].sum()))
-
-                mde = detectable_lift_proportion(
-                    conv_rate, total_n
-                )
-
-                st.markdown("### Design Summary")
-                st.write(f"Treatment DMAs: {chosen_effective}")
-                st.write(f"Estimated Conversions: {total_n}")
-                st.write(
-                    f"Estimated MDE: ±{round(mde * 100, 2)}%"
-                )
+            if len(chosen_effective) == 0:
+                st.warning("No DMAs selected for treatment — choose at least one.")
             else:
-                st.warning("Select at least one DMA for treatment.")
+                chosen_df = dmas_df[dmas_df["dma"].isin(chosen_effective)].copy()
+                chosen_df["est_conv"] = ((c_row["spend"] * chosen_df["spend_share"]) / avg_order_value) * conv_rate * (duration/28.0)
+                total_n = max(1, int(chosen_df["est_conv"].sum()))
+                mde = detectable_lift_proportion(conv_rate, total_n)
+                st.markdown("**Design summary**")
+                st.write(f"Treatment DMAs: {chosen_effective}")
+                st.write(f"Estimated conversions in duration (treatment): {total_n}")
+                st.write(f"Estimated MDE (approx): ±{round(mde*100,2)}%")
 
-        # ======================================================
-        # SYNTHETIC CAUSAL MODE
-        # ======================================================
+            st.markdown("---")
+            st.markdown("**Export payload / Simulate activation**")
+            notes = st.text_area("Notes (optional)", value="Prototype activation payload")
+            payload = {
+                "campaign": selected_campaign,
+                "test_type": "holdout" if test_type.startswith("Holdout") else "scale",
+                "start_date": start_dt.isoformat(),
+                "end_date": end_dt.isoformat(),
+                "treatment_dmas": chosen_effective,
+                "excluded_dmas": excluded_dmas,
+                "treatment_pct": int(treatment_pct),
+                "duration_days": int(duration),
+                "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate},
+                "notes": notes
+            }
+
+            st.code(payload, language="json")
+
+            # export button (save payload locally)
+            if st.button("Export JSON / Save payload"):
+                filename = f"experiment_payload_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                with open(filename,"w") as f:
+                    json.dump(payload, f, indent=2)
+                st.success(f"Payload written to {filename} (saved locally in app container).")
+                st.info("In production this payload would be posted to orchestration services.")
+
+            # Activation CTA (simulated)
+            if st.button("Activate Test (Simulate API call)"):
+                act_fname = f"activated_experiment_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                try:
+                    with open(act_fname, "w") as f:
+                        json.dump(payload, f, indent=2)
+                    st.success("Simulated activation completed.")
+                    st.write("Activation payload sent (simulated):")
+                    st.code(payload, language="json")
+                    st.info(f"Simulated orchestration response: {{'status':'accepted','id':'sim-{pd.Timestamp.now().strftime('%s')}'}}")
+                    st.caption("In production, this would call an orchestration API (e.g., internal service or Google Ads Manager).")
+                except Exception as e:
+                    st.error(f"Activation simulation failed: {e}")
+
         else:
+            # Synthetic causal mode (explicit)
             st.markdown("### Synthetic Causal Analysis")
-
-            method = st.selectbox(
-                "Method",
-                [
-                    "Historical Bid/Spend Variation",
-                    "Geo-Level Cross Section",
-                    "Time-Series Structural Model"
-                ]
-            )
-
-            hist_window = st.selectbox(
-                "Historical Window",
-                ["90 days", "180 days", "365 days"]
-            )
-
-            avg_order_value = st.number_input(
-                "Assumed Avg Order Value ($)",
-                value=50.0,
-                key="syn_aov"
-            )
-
-            conv_rate = st.number_input(
-                "Baseline Conversion Rate (decimal)",
-                value=0.01,
-                key="syn_conv"
-            )
-
-            if st.button("Run Synthetic Analysis"):
+            causal_method = st.selectbox("Method", options=["Historical Bid/Spend Variation","Geo-Level Cross Section","Time-Series Structural Model"])
+            hist_window = st.selectbox("Historical window", options=["90 days","180 days","365 days"])
+            avg_order_value = st.number_input("Assumed avg order value ($)", value=aov if 'aov' in locals() else 50.0, key="syn_aov")
+            conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="syn_conv")
+            if st.button("Run Synthetic Causal Analysis"):
                 base_effect = c_row["marginal_roas"] * 0.02
                 noise = np.random.normal(0, 0.5)
                 synthetic_lift = round(base_effect + noise, 2)
-
-                synthetic_conf = int(
-                    max(30, min(90, 60 + np.random.randint(-15, 30)))
-                )
-
-                st.write(
-                    f"Estimated Incremental Lift: {synthetic_lift}%"
-                )
-
-                st.write(
-                    f"Model Confidence: {synthetic_conf}%"
-                )
-
+                synthetic_conf = int(max(30, min(90, 60 + np.random.randint(-15,30))))
+                st.write(f"Estimated Incremental Lift (synthetic) for {selected_campaign}: **{synthetic_lift}%**")
+                st.write(f"Model Confidence: **{synthetic_conf}%**")
                 if synthetic_conf < confidence_threshold:
-                    st.warning(
-                        "Confidence moderate. Consider running controlled holdout."
-                    )
+                    st.warning("Confidence moderate/low. Recommend controlled validation (holdout) for higher certainty.")
                 else:
-                    st.success(
-                        "Confidence acceptable for directional decision."
-                    )
+                    st.success("Synthetic result has acceptable confidence for directional decisions.")
+                st.markdown("**Next steps**")
+                st.write("- Consider running a controlled geo holdout for validation.")
+                st.write("- If budget constrained, consider partial holdout or longer duration.")
+                payload = {
+                    "campaign": selected_campaign,
+                    "method": causal_method,
+                    "hist_window": hist_window,
+                    "synthetic_lift_pct": synthetic_lift,
+                    "synthetic_confidence_pct": synthetic_conf,
+                    "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate}
+                }
+                st.code(payload, language="json")
+                if st.button("Export synthetic result JSON"):
+                    fname = f"synthetic_result_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(fname,"w") as f:
+                        json.dump(payload, f, indent=2)
+                    st.success(f"Synthetic payload written to {fname}.")
