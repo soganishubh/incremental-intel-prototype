@@ -380,7 +380,7 @@ with tab1:
 
 # ------------------------
 # ------------------------
-# Tab 2: Measurement triangulation
+# Tab 2: Measurement triangulation (with contribution inputs & new triangulated columns)
 # ------------------------
 with tab2:
     st.header("Measurement triangulation — reconcile attributed, experiments, and MMM")
@@ -485,14 +485,66 @@ with tab2:
             "exp_iroas": round(exp_iroas,4),
             "mmm_iroas": round(mmm_iroas,4),
             "triangulated_iROAS": round(tri_iroas,4),
-            "weights": {"att": round(norm[0],2), "exp": round(norm[1],2), "mmm": round(norm[2],2)}
+            "weights": {"att": round(norm[0],2), "exp": round(norm[1],2), "mmm": round(norm[2],2)},
+            "spend": row["spend"],
+            "avg_roas": row["avg_roas"]
         })
 
     combined_df = pd.DataFrame(combined)
-    st.markdown("**Triangulated results** (triangulated iROAS blends data sources based on confidence)")
+
+    # ------------------------
+    # Contribution inputs (moved here)
+    # ------------------------
+    st.markdown("---")
+    st.subheader("Contribution & AOV inputs (used to compute contribution on triangulated incremental revenue)")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        aov = st.number_input("Assumed AOV ($)", value=50.0, key="tri_aov")
+    with c2:
+        cogs = st.number_input("COGS per order ($)", value=20.0, key="tri_cogs")
+    with c3:
+        promo = st.number_input("Avg promo per order ($)", value=2.0, key="tri_promo")
+    with c4:
+        ship = st.number_input("Avg shipping per order ($)", value=3.0, key="tri_ship")
+
+    # compute portfolio total revenue (approx) as sum(avg_roas * spend)
+    portfolio_total_revenue = 0.0
+    try:
+        portfolio_total_revenue = float((portfolio["avg_roas"] * portfolio["spend"]).sum())
+    except Exception:
+        portfolio_total_revenue = 0.0
+
+    # Add the requested columns to combined_df: triangulated_incremental_revenue, % of total revenue, contribution_margin_pct
+    if not combined_df.empty:
+        tri_inc_revs = []
+        tri_pct_total = []
+        tri_cm_pct = []
+        for _, r in combined_df.iterrows():
+            tri_iroas = float(r.get("triangulated_iROAS", 0.0))
+            spend = float(r.get("spend", 0.0))
+            # Triangulated incremental revenue (approx) = triangulated_iROAS * spend
+            tri_inc = tri_iroas * spend
+            # % of total revenue
+            pct_of_total = (tri_inc / (portfolio_total_revenue + 1e-9)) * 100 if portfolio_total_revenue > 0 else 0.0
+            # contribution calc: orders = tri_inc / aov; contribution_per_order = aov - cogs - promo - ship
+            contribution_per_order = aov - cogs - promo - ship
+            est_orders = (tri_inc / (aov + 1e-9)) if aov > 0 else 0.0
+            contribution = est_orders * contribution_per_order
+            cm_pct = (contribution / (tri_inc + 1e-9)) * 100 if tri_inc > 0 else 0.0
+
+            tri_inc_revs.append(round(tri_inc, 2))
+            tri_pct_total.append(round(pct_of_total, 3))
+            tri_cm_pct.append(round(cm_pct, 2))
+
+        combined_df["triangulated_incremental_revenue"] = tri_inc_revs
+        combined_df["triangulated_pct_of_total_revenue"] = tri_pct_total
+        combined_df["triangulated_contribution_margin_pct"] = tri_cm_pct
+
+    st.markdown("**Triangulated results** (triangulated iROAS blends data sources based on confidence). New columns show triangulated incremental rev, % of total revenue, and contribution margin % (based on AOV/COGS inputs above).")
     with st.expander("View triangulated table and breakdown"):
         if not combined_df.empty:
-            st.dataframe(combined_df[["campaign","attributed","experiment_lift","mmm","final_confidence","triangulated_iROAS","att_iroas","exp_iroas","mmm_iroas","weights"]], height=300)
+            display_cols = ["campaign","attributed","experiment_lift","mmm","final_confidence","triangulated_iROAS","triangulated_incremental_revenue","triangulated_pct_of_total_revenue","triangulated_contribution_margin_pct","att_iroas","exp_iroas","mmm_iroas","weights"]
+            st.dataframe(combined_df[display_cols], height=360)
         else:
             st.write("No triangulation data yet.")
 
@@ -510,13 +562,12 @@ with tab2:
                 synthetic_conf = int(max(30, min(85, 60 + np.random.randint(-10,20))))
                 st.write(f"Campaign: **{c}** — Synthetic lift: **{synthetic_lift}%**, Confidence: **{synthetic_conf}%**")
             st.warning("Synthetic results are directional. Consider controlled validation.")
-
 # ------------------------
-# Tab 3: Recommendation Engine
+# Tab 3: Recommendation Engine (contribution moved to Triangulation)
 # ------------------------
 with tab3:
     st.header("Recommendation Engine")
-    st.markdown("Run reallocation or portfolio-scale simulations. Choose allocation strategy and review projected revenue & contribution impact.")
+    st.markdown("Run reallocation or portfolio-scale simulations. Choose allocation strategy and review projected revenue impact.")
 
     # recompute portfolio (use full df_mod for up-to-date numbers)
     portfolio = build_portfolio_df(st.session_state["df_mod"])
@@ -653,25 +704,7 @@ with tab3:
                         st.write(f"{it[0]} → -{pretty_currency(it[1])} → estimated revenue loss ${it[2]:,}")
                     st.warning(f"Net revenue loss (approx): ${int(sum([x[2] for x in impact])):,}")
 
-    # Contribution margin inputs & display
-    st.markdown("---")
-    st.subheader("Contribution margin & first-party signals")
-    st.markdown("Enter cost inputs to compute contribution margin. This helps prioritize by profit, not just revenue.")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        aov = st.number_input("Assumed AOV ($)", value=50.0, key="sim_aov")
-    with c2:
-        cogs = st.number_input("COGS per order ($)", value=20.0, key="sim_cogs")
-    with c3:
-        promo = st.number_input("Avg promo per order ($)", value=2.0, key="sim_promo")
-    ship = st.number_input("Avg shipping per order ($)", value=3.0, key="sim_ship")
-    contribution_per_order = aov - cogs - promo - ship
-    cm_pct = round(100 * (contribution_per_order / aov),1) if aov>0 else 0.0
-    st.write(f"Contribution per order: ${contribution_per_order:.2f} — Contribution margin: {cm_pct}%")
-    if use_cdp:
-        st.info("First-party signals (CDP) enabled: attributed revenue shown as % of total revenue where simulated data exists.")
-# Tab 4: Experimentation Studio
-# # ------------------------
+    # End Tab 3 (contribution section removed — moved to Tab 2)
 # Tab 4: Experimentation Studio
 # ------------------------
 with tab4:
