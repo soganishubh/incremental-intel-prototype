@@ -286,15 +286,15 @@ default_end = pd.to_datetime(date.today())
 date_range = st.sidebar.date_input("Date range", value=(default_start.date(), default_end.date()))
 all_campaigns = st.session_state["df_mod"]["campaign"].tolist()
 selected_campaigns = st.sidebar.multiselect("Campaigns (scope)", options=all_campaigns, default=all_campaigns)
-auto_pop = st.sidebar.checkbox("Auto-populate measurement fields if integrations available (simulated)", value=True)
+auto_pop = st.sidebar.checkbox("Auto-populate measurement fields if integrations available", value=True)
 if st.sidebar.button("Refresh / Simulate Data"):
     st.session_state["data_refresh_ts"] = pd.Timestamp.now()
     st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("First-party data")
-use_cdp = st.sidebar.checkbox("Use Adobe CDP signals (simulated)", value=True)
-st.sidebar.caption("When enabled, displays first-party match rates and attributed share (demo).")
+use_cdp = st.sidebar.checkbox("Use CDP signals", value=True)
+st.sidebar.caption("When enabled, uses first-party sales and media data.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Ask the Assistant")
@@ -380,31 +380,35 @@ with tab1:
 
 # ------------------------
 # ------------------------
-# Tab 2: Measurement triangulation (with contribution inputs & new triangulated columns)
+led validation.")
+# ------------------------
+# ------------------------
+# Tab 2: Measurement triangulation (with contribution inputs and requested percent columns)
 # ------------------------
 with tab2:
     st.header("Measurement triangulation — reconcile attributed, experiments, and MMM")
-    st.markdown("Provide or override values from different measurement sources. All attribution values are labeled as **Attributed**.")
+    st.markdown(
+        "Provide or override values from different measurement sources. "
+        "Measurement Confidence (%) = how much we trust the measurement signals (attribution, experiments, MMM). "
+        "Set to 0 to use system-calculated confidence."
+    )
 
     methods = []
-    # Plain numeric inputs (no +/-). Prepopulate when auto_pop=True.
     for i, r in enumerate(portfolio.to_dict(orient="records")):
         st.markdown(f"**{r['campaign']}**")
         col1, col2, col3, col4 = st.columns([2,2,2,1])
 
-        # sensible auto-populated defaults (simulated)
-        default_att = float(round(r["spend"] * (r["avg_roas"] * 0.05), 0)) if r["avg_roas"]>0 else 0.0
-        default_exp = float(round(r["spend"] * (0.01 if r["has_experiment"] else 0.02), 0))
-        default_mmm = float(round(r["spend"] * (r["mmm_share"] * 0.04 + 0.01), 0))
+        # sensible simulated defaults
+        default_att = float(round(r["spend"] * (r.get("avg_roas", 0.0) * 0.05), 0)) if r.get("avg_roas", 0.0) > 0 else 0.0
+        default_exp = float(round(r["spend"] * (0.01 if r.get("has_experiment", False) else 0.02), 0))
+        default_mmm = float(round(r["spend"] * (r.get("mmm_share", 0.2) * 0.04 + 0.01), 0))
         default_conf = 0
 
-        # initialize session state defaults (only if not present)
         st.session_state.setdefault(f"att_{i}", default_att if auto_pop else 0.0)
         st.session_state.setdefault(f"exp_{i}", default_exp if auto_pop else 0.0)
         st.session_state.setdefault(f"mmm_{i}", default_mmm if auto_pop else 0.0)
         st.session_state.setdefault(f"conf_{i}", default_conf)
 
-        # Plain numeric inputs (no ±)
         with col1:
             att_val = st.number_input(
                 f"Attributed revenue ($) - {r['campaign']}",
@@ -429,74 +433,34 @@ with tab2:
                 step=100.0,
                 key=f"mmm_{i}"
             )
-        # Confidence as slider per your request
         with col4:
-            conf_val = st.slider(
-                f"Confidence override % (0 = auto) - {r['campaign']}",
+            conf_numeric = st.slider(
+                f"Measurement Confidence % (0 = auto) - {r['campaign']}",
                 0, 100, int(st.session_state[f"conf_{i}"]), key=f"conf_{i}"
             )
 
-        # collect inputs to methods list for triangulation
         methods.append({
             "campaign": r["campaign"],
             "attributed": float(att_val),
             "experiment_lift": float(exp_val),
             "mmm": float(mmm_val),
-            "conf_override": int(conf_val),
-            "auto_conf": r["confidence"],
-            "spend": r["spend"],
-            "avg_roas": r["avg_roas"],
-            "marginal_roas": r["marginal_roas"]
+            "conf_override": int(conf_numeric),
+            "auto_conf": r.get("confidence", 60),
+            "spend": r.get("spend", 0.0),
+            "avg_roas": r.get("avg_roas", 0.0),
+            "marginal_roas": r.get("marginal_roas", 0.0)
         })
 
-    # end for loop
     methods_df = pd.DataFrame(methods)
     st.markdown("**Triangulation inputs (current)**")
     with st.expander("View triangulation inputs table"):
         st.dataframe(methods_df, height=260)
 
-    # Combine and compute triangulated iROAS
-    combined = []
-    for _, row in methods_df.iterrows():
-        final_conf = int(row["conf_override"]) if row["conf_override"] > 0 else int(row["auto_conf"])
-        # compute source-level iROAS estimates; use spend as denominator if available, else small epsilon
-        eps = 1e-9
-        att_iroas = (row["attributed"] / (row["spend"] + eps)) if row["spend"] > 0 else 0.0
-        exp_iroas = (row["experiment_lift"] / (row["spend"] * 0.1 + eps)) if row["experiment_lift"]>0 else 0.0
-        mmm_iroas = (row["mmm"] / (row["spend"] * 0.2 + eps)) if row["mmm"]>0 else 0.0
-        # weigh by confidence heuristics
-        w_exp = 0.6 if row["experiment_lift"] > 0 and final_conf >= 60 else 0.25 if row["experiment_lift"]>0 else 0.0
-        w_att = 0.3 if row["attributed"] > 0 else 0.15
-        w_mmm = 0.4 if row["mmm"] > 0 and row["auto_conf"]>40 else 0.15 if row["mmm"]>0 else 0.0
-        # normalize weights
-        weights = np.array([w_att, w_exp, w_mmm], dtype=float)
-        if weights.sum() == 0:
-            norm = np.array([1/3,1/3,1/3])
-        else:
-            norm = weights / weights.sum()
-        tri_iroas = norm[0]*att_iroas + norm[1]*exp_iroas + norm[2]*mmm_iroas
-        combined.append({
-            "campaign": row["campaign"],
-            "attributed": row["attributed"],
-            "experiment_lift": row["experiment_lift"],
-            "mmm": row["mmm"],
-            "final_confidence": final_conf,
-            "att_iroas": round(att_iroas,4),
-            "exp_iroas": round(exp_iroas,4),
-            "mmm_iroas": round(mmm_iroas,4),
-            "triangulated_iROAS": round(tri_iroas,4),
-            "weights": {"att": round(norm[0],2), "exp": round(norm[1],2), "mmm": round(norm[2],2)},
-            "spend": row["spend"],
-            "avg_roas": row["avg_roas"]
-        })
-
-    combined_df = pd.DataFrame(combined)
-
     # ------------------------
-    # Contribution inputs (moved here)
+    # Contribution inputs (kept in this tab)
     # ------------------------
     st.markdown("---")
-    st.subheader("Contribution & AOV inputs (used to compute contribution on triangulated incremental revenue)")
+    st.subheader("Contribution inputs (AOV / COGS / Promo / Shipping)")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         aov = st.number_input("Assumed AOV ($)", value=50.0, key="tri_aov")
@@ -507,86 +471,158 @@ with tab2:
     with c4:
         ship = st.number_input("Avg shipping per order ($)", value=3.0, key="tri_ship")
 
-    # compute portfolio total revenue (approx) as sum(avg_roas * spend)
-    portfolio_total_revenue = 0.0
+    # portfolio total revenue approximation (avg_roas * spend)
     try:
         portfolio_total_revenue = float((portfolio["avg_roas"] * portfolio["spend"]).sum())
     except Exception:
         portfolio_total_revenue = 0.0
 
-    # Add the requested columns to combined_df: triangulated_incremental_revenue, % of total revenue, contribution_margin_pct
+    # ------------------------
+    # Compute triangulated iROAS (dynamic weights) and requested new percent columns
+    # ------------------------
+    combined = []
+    for _, row in methods_df.iterrows():
+        final_conf = int(row["conf_override"]) if row["conf_override"] > 0 else int(row.get("auto_conf", 60))
+
+        # confidence category (display / affects weight scaling)
+        if final_conf >= 75:
+            conf_cat = "High"
+            conf_scale = 1.2
+            conf_badge = "🟢"
+        elif final_conf >= 50:
+            conf_cat = "Moderate"
+            conf_scale = 1.0
+            conf_badge = "🟡"
+        else:
+            conf_cat = "Low"
+            conf_scale = 0.75
+            conf_badge = "🔴"
+
+        eps = 1e-9
+        spend = float(row.get("spend", 0.0))
+        att_iroas = (row["attributed"] / (spend + eps)) if spend > 0 else 0.0
+        exp_iroas = (row["experiment_lift"] / (max(1.0, spend * 0.1))) if row["experiment_lift"] > 0 else 0.0
+        mmm_iroas = (row["mmm"] / (max(1.0, spend * 0.2))) if row["mmm"] > 0 else 0.0
+
+        # base weights
+        w_att = 0.25
+        w_exp = 0.45 if row["experiment_lift"] > 0 else 0.20
+        w_mmm = 0.30 if row["mmm"] > 0 else 0.15
+
+        # scale by confidence
+        w_att *= (1.0 if conf_cat == "High" else 1.0 if conf_cat == "Moderate" else 1.05)
+        w_exp *= (1.2 if conf_cat == "High" else 1.0 if conf_cat == "Moderate" else 0.7)
+        w_mmm *= (1.15 if conf_cat == "High" else 1.0 if conf_cat == "Moderate" else 0.8)
+
+        # boost attribution if attribution iROAS is large
+        if att_iroas > 0:
+            boost = min(1.3, 1.0 + (att_iroas * 0.25))
+            w_att *= boost
+
+        weights = np.array([w_att, w_exp, w_mmm], dtype=float)
+        if weights.sum() == 0:
+            norm = np.array([1/3,1/3,1/3])
+        else:
+            norm = weights / weights.sum()
+
+        tri_iroas = norm[0]*att_iroas + norm[1]*exp_iroas + norm[2]*mmm_iroas
+
+        combined.append({
+            "campaign": row["campaign"],
+            "attributed": row["attributed"],
+            "experiment_lift": row["experiment_lift"],
+            "mmm": row["mmm"],
+            "final_confidence": final_conf,
+            "confidence_category": conf_cat,
+            "confidence_badge": conf_badge,
+            "att_iroas": round(att_iroas, 4),
+            "exp_iroas": round(exp_iroas, 4),
+            "mmm_iroas": round(mmm_iroas, 4),
+            "triangulated_iROAS": round(tri_iroas, 4),
+            "weights": {"att": round(norm[0],2), "exp": round(norm[1],2), "mmm": round(norm[2],2)},
+            "spend": spend,
+            "avg_roas": row.get("avg_roas", 0.0)
+        })
+
+    combined_df = pd.DataFrame(combined)
+
+    # compute the requested new columns
     if not combined_df.empty:
         tri_inc_revs = []
-        tri_pct_total = []
-        tri_cm_pct = []
+        tri_inc_pct_total = []
+        tri_contribution_pct_of_total = []
         for _, r in combined_df.iterrows():
             tri_iroas = float(r.get("triangulated_iROAS", 0.0))
             spend = float(r.get("spend", 0.0))
-            # Triangulated incremental revenue (approx) = triangulated_iROAS * spend
+            # triangulated incremental revenue (dollars)
             tri_inc = tri_iroas * spend
-            # % of total revenue
-            pct_of_total = (tri_inc / (portfolio_total_revenue + 1e-9)) * 100 if portfolio_total_revenue > 0 else 0.0
-            # contribution calc: orders = tri_inc / aov; contribution_per_order = aov - cogs - promo - ship
-            contribution_per_order = aov - cogs - promo - ship
+            # triangulated incremental revenue as % of portfolio total revenue
+            tri_inc_pct = (tri_inc / (portfolio_total_revenue + 1e-9)) * 100 if portfolio_total_revenue > 0 else 0.0
+            # contribution dollars on incremental: est_orders = tri_inc / aov; contribution_per_order = aov - cogs - promo - ship
+            contrib_per_order = aov - cogs - promo - ship
             est_orders = (tri_inc / (aov + 1e-9)) if aov > 0 else 0.0
-            contribution = est_orders * contribution_per_order
-            cm_pct = (contribution / (tri_inc + 1e-9)) * 100 if tri_inc > 0 else 0.0
+            contribution_dollars = est_orders * contrib_per_order
+            # contribution as % of portfolio total revenue (what you called "actual % out of triangulated % of total revenue")
+            contrib_pct_of_total = (contribution_dollars / (portfolio_total_revenue + 1e-9)) * 100 if portfolio_total_revenue > 0 else 0.0
 
             tri_inc_revs.append(round(tri_inc, 2))
-            tri_pct_total.append(round(pct_of_total, 3))
-            tri_cm_pct.append(round(cm_pct, 2))
+            tri_inc_pct_total.append(round(tri_inc_pct, 4))
+            tri_contribution_pct_of_total.append(round(contrib_pct_of_total, 4))
 
         combined_df["triangulated_incremental_revenue"] = tri_inc_revs
-        combined_df["triangulated_pct_of_total_revenue"] = tri_pct_total
-        combined_df["triangulated_contribution_margin_pct"] = tri_cm_pct
+        combined_df["triangulated_incremental_revenue_pct_of_total_revenue"] = tri_inc_pct_total
+        combined_df["triangulated_incremental_contribution_margin_pct_of_total_revenue"] = tri_contribution_pct_of_total
 
-    st.markdown("**Triangulated results** (triangulated iROAS blends data sources based on confidence). New columns show triangulated incremental rev, % of total revenue, and contribution margin % (based on AOV/COGS inputs above).")
+    st.markdown("**Triangulated results** — dynamic weights + measurement confidence. New columns show incremental dollars and percent-of-portfolio revenue and contribution % of total revenue.")
     with st.expander("View triangulated table and breakdown"):
         if not combined_df.empty:
-            display_cols = ["campaign","attributed","experiment_lift","mmm","final_confidence","triangulated_iROAS","triangulated_incremental_revenue","triangulated_pct_of_total_revenue","triangulated_contribution_margin_pct","att_iroas","exp_iroas","mmm_iroas","weights"]
-            st.dataframe(combined_df[display_cols], height=360)
+            display_cols = [
+                "campaign", "confidence_badge", "confidence_category", "final_confidence",
+                "attributed", "experiment_lift", "mmm",
+                "triangulated_iROAS", "triangulated_incremental_revenue", "triangulated_incremental_revenue_pct_of_total_revenue",
+                "triangulated_incremental_contribution_margin_pct_of_total_revenue",
+                "att_iroas", "exp_iroas", "mmm_iroas", "weights"
+            ]
+            st.dataframe(combined_df[display_cols], height=420)
         else:
             st.write("No triangulation data yet.")
 
-    # CTA: if any campaign low confidence, offer synthetic causal quick run
+    # low confidence CTA
     low_conf_campaigns = combined_df[combined_df["final_confidence"] < confidence_threshold]["campaign"].tolist() if not combined_df.empty else []
     if low_conf_campaigns:
         st.info(f"Low confidence detected for: {', '.join(low_conf_campaigns)} (threshold {confidence_threshold}%).")
         if st.button("Run Synthetic Causal Analysis for low-confidence campaigns"):
             st.markdown("**Synthetic results (quick simulation)**")
             for c in low_conf_campaigns:
-                port_row = portfolio[portfolio["campaign"]==c].iloc[0]
+                port_row = portfolio[portfolio["campaign"] == c].iloc[0]
                 base_effect = port_row["marginal_roas"] * 0.02
                 noise = np.random.normal(0, 0.4)
                 synthetic_lift = round(base_effect + noise, 2)
-                synthetic_conf = int(max(30, min(85, 60 + np.random.randint(-10,20))))
+                synthetic_conf = int(max(30, min(85, 60 + np.random.randint(-10, 20))))
                 st.write(f"Campaign: **{c}** — Synthetic lift: **{synthetic_lift}%**, Confidence: **{synthetic_conf}%**")
             st.warning("Synthetic results are directional. Consider controlled validation.")
 # ------------------------
-# Tab 3: Recommendation Engine (contribution moved to Triangulation)
+# Tab 3: Recommendation Engine (reads triangulated percent columns from Tab 2)
 # ------------------------
 with tab3:
     st.header("Recommendation Engine")
-    st.markdown("Run reallocation or portfolio-scale simulations. Choose allocation strategy and review projected revenue impact.")
+    st.markdown("Run reallocation or portfolio-scale simulations. Recommendations draw from triangulated iROAS and contribution signals computed in Triangulation tab.")
 
-    # recompute portfolio (use full df_mod for up-to-date numbers)
     portfolio = build_portfolio_df(st.session_state["df_mod"])
     portfolio = portfolio[portfolio["campaign"].isin(selected_campaigns)].reset_index(drop=True)
 
-    # build rec_df (improved rules: populate reason & projected_incremental)
+    # build rec_df using triangulated metrics if available
     recs = []
-    # ensure combined_df exists (it should from triangulation); if not, empty DF
     try:
         tri_df = combined_df.copy()
     except Exception:
         tri_df = pd.DataFrame()
 
     for r in portfolio.to_dict(orient="records"):
-        # find triangulation row if present
         tri_row = tri_df[tri_df["campaign"] == r["campaign"]]
-        final_conf = int(tri_row["final_confidence"].values[0]) if not tri_row.empty else r["confidence"]
+        final_conf = int(tri_row["final_confidence"].values[0]) if not tri_row.empty else r.get("confidence", 60)
+        conf_cat = tri_row["confidence_category"].values[0] if not tri_row.empty else ("High" if final_conf >= 75 else "Moderate" if final_conf >= 50 else "Low")
 
-        # pick the primary iROAS: triangulated if available, else marginal_roas
         if not tri_row.empty and "triangulated_iROAS" in tri_row.columns:
             tri_iroas = float(tri_row["triangulated_iROAS"].values[0])
         else:
@@ -596,60 +632,64 @@ with tab3:
         reason = "No strong signal to change"
         projected = 0
 
-        # Reduce: high saturation + low marginal vs avg
-        if r["saturation"] >= 75 and r["marginal_roas"] < (r["avg_roas"] * 0.6) and final_conf >= 50:
+        if r.get("saturation", 0) >= 75 and r.get("marginal_roas", 0.0) < (r.get("avg_roas", 0.0) * 0.6) and final_conf >= 50:
             action = "Reduce spend"
             reason = "High saturation & low marginal ROAS"
-            # estimate reduction of 2% of spend and revenue impact using tri_iroas
             delta_spend = int(r["spend"] * 0.02)
             projected = -int(tri_iroas * delta_spend)
-
-        # Increase: elastic channel & reasonable confidence
-        elif r["elasticity_b"] > 0.5 and final_conf >= 40:
+        elif r.get("elasticity_b", 0.0) > 0.5 and final_conf >= 40:
             action = "Increase spend"
             reason = "Higher elasticity suggested by model"
-            delta_spend = int(r["spend"] * 0.03)  # simulate adding 3%
+            delta_spend = int(r["spend"] * 0.03)
             projected = int(tri_iroas * delta_spend)
-
-        # Low confidence -> recommend validation
         elif final_conf < 50:
             action = "Validate"
             reason = "Low measurement confidence — suggest experiment/holdout"
             projected = 0
-
         else:
             action = "Hold"
             reason = "No actionable signal; monitor"
+
+        tri_inc = int(tri_row["triangulated_incremental_revenue"].values[0]) if not tri_row.empty and "triangulated_incremental_revenue" in tri_row.columns else 0
+        tri_inc_pct = float(tri_row["triangulated_incremental_revenue_pct_of_total_revenue"].values[0]) if not tri_row.empty and "triangulated_incremental_revenue_pct_of_total_revenue" in tri_row.columns else 0.0
+        tri_contrib_pct_of_total = float(tri_row["triangulated_incremental_contribution_margin_pct_of_total_revenue"].values[0]) if not tri_row.empty and "triangulated_incremental_contribution_margin_pct_of_total_revenue" in tri_row.columns else 0.0
 
         recs.append({
             "campaign": r["campaign"],
             "action": action,
             "reason": reason,
             "projected_incremental": int(projected),
+            "triangulated_incremental_dollars": tri_inc,
+            "triangulated_incremental_pct_of_total_revenue": tri_inc_pct,
+            "triangulated_incremental_contribution_pct_of_total_revenue": tri_contrib_pct_of_total,
+            "confidence_category": conf_cat,
             "confidence": final_conf
         })
 
     rec_df = pd.DataFrame(recs)
     st.subheader("Recommendations snapshot")
     with st.expander("View recommendation table"):
-        st.dataframe(rec_df, height=240)
+        st.dataframe(rec_df, height=260)
 
+    # Simulation UI (unchanged flow; uses triangulated metrics where possible)
     st.markdown("### Simulation type")
     sim_type = st.radio("Choose simulation", options=["Reallocate between campaigns","Scale total portfolio spend"], index=0)
 
     if sim_type == "Reallocate between campaigns":
         if len(portfolio) < 2:
-            st.info("Select at least 2 campaigns in the sidebar to reallocate.")
+            st.info("Select at least 2 campaigns to reallocate.")
         else:
             from_campaign = st.selectbox("From campaign (reduce)", options=portfolio["campaign"].tolist(), index=0, key="sim_from")
             to_campaign = st.selectbox("To campaign (increase)", options=portfolio["campaign"].tolist(), index=1, key="sim_to")
-            shift_pct = st.slider("Shift % of 'From' spend to 'To' (simulate)", 0, 50, 10, key="sim_shift")
+            shift_pct = st.slider("Shift % of 'From' spend to 'To'", 0, 50, 10, key="sim_shift")
             if st.button("Run reallocation simulation"):
                 from_row = portfolio[portfolio["campaign"]==from_campaign].iloc[0]
                 to_row = portfolio[portfolio["campaign"]==to_campaign].iloc[0]
                 moved_amount = int(from_row["spend"] * shift_pct/100)
-                projected_inc = to_row["marginal_roas"] * moved_amount
-                from_loss = from_row["marginal_roas"] * moved_amount
+                to_tri = float(tri_df[tri_df["campaign"]==to_campaign]["triangulated_iROAS"].values[0]) if not tri_df.empty and to_campaign in tri_df["campaign"].tolist() else to_row["marginal_roas"]
+                from_tri = float(tri_df[tri_df["campaign"]==from_campaign]["triangulated_iROAS"].values[0]) if not tri_df.empty and from_campaign in tri_df["campaign"].tolist() else from_row["marginal_roas"]
+                projected_inc = to_tri * moved_amount
+                from_loss = from_tri * moved_amount
                 net_incremental = projected_inc - from_loss
                 st.write("Moved amount:", f"${moved_amount:,}")
                 st.write(f"Projected incremental revenue (gain): ${int(projected_inc):,}")
@@ -660,24 +700,21 @@ with tab3:
         st.markdown("### Portfolio scale simulation")
         scale_mode = st.radio("Scale mode", options=["Increase total budget", "Decrease total budget"], index=0)
         if scale_mode == "Increase total budget":
-            add_amount = st.number_input("Add absolute $ to portfolio (e.g., 50000)", min_value=0, value=100000, step=10000)
+            add_amount = st.number_input("Add absolute $ to portfolio", min_value=0, value=100000, step=10000)
             strategy = st.selectbox("Allocate new dollars by", options=["triangulated_iROAS","marginal_roas"], index=0)
             if st.button("Run portfolio increase simulation"):
-                remaining = int(add_amount)
-                # rank campaigns by chosen strategy
+                # allocation uses triangulated_iROAS when chosen and available
                 if strategy == "triangulated_iROAS" and not combined_df.empty:
                     rank = combined_df.set_index("campaign")["triangulated_iROAS"].to_dict()
                 else:
                     rank = portfolio.set_index("campaign")["marginal_roas"].to_dict()
-                # allocate proportionally to rank (positive values)
                 total_rank = sum([v for v in rank.values() if v>0]) or 1.0
                 projection = []
                 net_inc_total = 0.0
                 for c in portfolio["campaign"].tolist():
                     alloc = int(add_amount * (max(rank.get(c,0),0) / total_rank))
-                    # incremental revenue approx = marginal_roas * alloc
-                    marg = portfolio[portfolio["campaign"]==c]["marginal_roas"].iloc[0]
-                    inc_rev = marg * alloc
+                    chosen_metric = rank.get(c, 0.0)
+                    inc_rev = chosen_metric * alloc
                     net_inc_total += inc_rev
                     projection.append((c, alloc, int(inc_rev)))
                 st.markdown("**Allocation & estimated incremental revenue**")
@@ -685,17 +722,15 @@ with tab3:
                     st.write(f"{p[0]} → +{pretty_currency(p[1])} → estimated incremental rev ${p[2]:,}")
                 st.success(f"Net incremental revenue (approx): ${int(net_inc_total):,}")
         else:
-            reduce_amount = st.number_input("Reduce absolute $ from portfolio (e.g., 50000)", min_value=0, value=100000, step=10000)
+            reduce_amount = st.number_input("Reduce absolute $ from portfolio", min_value=0, value=100000, step=10000)
             strategy = st.selectbox("Reduce dollars from", options=["High saturation", "Low triangulated_iROAS"], index=0)
             if st.button("Run portfolio reduction simulation"):
                 if strategy == "High saturation":
                     rank = portfolio.set_index("campaign")["saturation"].to_dict()
-                    # remove proportional to saturation
                     total_rank = sum(rank.values()) or 1.0
                     impact = []
                     for c,v in rank.items():
                         cut = int(reduce_amount * (v / total_rank))
-                        # revenue loss approx = marginal_roas * cut
                         marg = portfolio[portfolio["campaign"]==c]["marginal_roas"].iloc[0]
                         loss = marg * cut
                         impact.append((c, cut, int(loss)))
@@ -703,8 +738,6 @@ with tab3:
                     for it in impact:
                         st.write(f"{it[0]} → -{pretty_currency(it[1])} → estimated revenue loss ${it[2]:,}")
                     st.warning(f"Net revenue loss (approx): ${int(sum([x[2] for x in impact])):,}")
-
-    # End Tab 3 (contribution section removed — moved to Tab 2)
 # Tab 4: Experimentation Studio
 # ------------------------
 with tab4:
