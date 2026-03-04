@@ -380,9 +380,6 @@ with tab1:
 
 # ------------------------
 # ------------------------
-led validation.")
-# ------------------------
-# ------------------------
 # Tab 2: Measurement triangulation (with contribution inputs and requested percent columns)
 # ------------------------
 with tab2:
