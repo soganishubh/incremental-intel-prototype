@@ -329,7 +329,24 @@ agg = weighted_portfolio_metrics(portfolio)
 # ------------------------
 st.title("Incremental Intelligence — Prototype")
 st.markdown("A prototype for elasticity, triangulation, recommendations, and experimentation. Data is simulated unless integrations are connected. Spend inputs are simulation-only and do not retrain models.")
+# ------------------------
+# Global prototype controls (KPI chooser + Geo test mode)
+# Place this after session init and before creating tabs so it's visible for all tabs.
+# ------------------------
+st.sidebar.markdown("### Prototype Controls")
+kpi_options = ["Revenue"]  # placeholder: expand when integrations available
+st.session_state.setdefault("selected_kpi", kpi_options[0])
+selected_kpi = st.sidebar.selectbox("Select KPI (prototype)", options=kpi_options, index=0, key="selected_kpi")
+st.sidebar.caption("Only Revenue is available in this prototype. Additional KPIs will appear when data integrations are connected.")
 
+# Geo test mode selector (single vs multi-cell) — multi-cell disabled in prototype
+st.session_state.setdefault("geo_test_mode", "Single-cell (Geo Holdout)")
+geo_modes = ["Single-cell (Geo Holdout)", "Multi-cell (Geo Holdout)"]
+# show multi-cell but disabled so no behaviour change
+st.sidebar.selectbox("Geo test mode", options=geo_modes, index=0, key="geo_test_mode", help="Multi-cell design is planned; disabled in prototype.")
+
+# Expose a small banner/top-info in each tab indicating KPI & mode
+st.session_state["ui_banner_text"] = f"KPI: {selected_kpi} — Geo test mode: {st.session_state.get('geo_test_mode','Single-cell (Geo Holdout)')}"
 tab1, tab2, tab3, tab4 = st.tabs(["Portfolio overview", "Measurement triangulation", "Recommendations", "Experimentation Studio"])
 
 # ------------------------
@@ -735,35 +752,48 @@ with tab3:
                     for it in impact:
                         st.write(f"{it[0]} → -{pretty_currency(it[1])} → estimated revenue loss ${it[2]:,}")
                     st.warning(f"Net revenue loss (approx): ${int(sum([x[2] for x in impact])):,}")
-# Tab 4: Experimentation Studio
+# ------------------------
+# Tab 4: Experimentation Studio (updated: Tests table + disabled CTAs)
 # ------------------------
 with tab4:
     st.header("Experimentation Studio")
-    st.markdown("Design holdout or scale tests, or run synthetic causal analysis when RCT is not feasible. This module helps recommend DMAs and compute MDEs.")
+    st.markdown(
+        "Design holdout or scale tests, or run synthetic causal analysis when RCT is not feasible. "
+        "Use the controls in the sidebar to change KPI or geo-test mode (multi-cell disabled in prototype)."
+    )
 
+    # Show banner with KPI and geo test mode chosen
+    st.info(st.session_state.get("ui_banner_text", "KPI: Revenue — Geo test mode: Single-cell (Geo Holdout)"))
+
+    # Quick summary of current mode (multi-cell inactive)
+    if st.session_state.get("geo_test_mode", "Single-cell (Geo Holdout)").startswith("Multi"):
+        st.warning("Multi-cell design is shown but currently disabled in prototype (no multi-cell logic will run).")
+
+    # If no campaigns selected in scope
     if portfolio.empty:
         st.info("No campaigns selected in scope. Pick campaigns in sidebar.")
     else:
+        # existing experiment design UI (unchanged) — keep candidate design and DMA selection etc.
         selected_campaign = st.selectbox("Select campaign to validate", options=portfolio["campaign"].tolist(), key="exp_campaign")
         c_row = portfolio[portfolio["campaign"]==selected_campaign].iloc[0]
 
         mode = st.radio("Mode", options=["Controlled Experiment (Holdout / Scale)","Synthetic Causal Analysis"], index=0)
 
+        # Controlled experiment flow (same as before)
         if mode.startswith("Controlled"):
             test_type = st.radio("Test type", options=["Holdout (Geo Holdout)","Scale (Spend Ramp)"], index=0)
             st.markdown("**DMA pool (simulated)**")
             dmas_df = sample_dmas.copy()
             dmas_df["dma"] = dmas_df["dma"].astype(str)
-            st.dataframe(dmas_df, width=700, height=200)
+            st.dataframe(dmas_df, width=700, height=160)
 
             st.markdown("**Recommended candidate designs**")
-            avg_order_value = st.number_input("Assumed avg order value ($)", value= aov if 'aov' in locals() else 50.0, key="exp_aov2")
+            avg_order_value = st.number_input("Assumed avg order value ($)", value=50.0, key="exp_aov2")
             conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="exp_conv2")
             candidates = recommend_test_designs(dmas_df, campaign_spend=c_row["spend"], avg_order_value=avg_order_value, conv_rate=conv_rate)
             cand_df = pd.DataFrame(candidates)[["name","size","dmas","n","mde_pct","est_conv_total"]]
             st.table(cand_df)
 
-            # Candidate radio precomputes default
             chosen_design = st.radio("Pick candidate design or Custom", options=[c["name"] for c in candidates] + ["Custom"], index=1, key="candidate_radio")
             pick = None
             if chosen_design != "Custom":
@@ -772,12 +802,10 @@ with tab4:
                     st.write("Candidate details:")
                     st.write(pick)
 
-            # SAFE DMA handling: normalize and clean session_state BEFORE widget creation
+            # SAFE DMA handling as before (coercion + defaults)
             st.markdown("**Customize DMAs**")
             dmas = dmas_df["dma"].astype(str).tolist()
             preselected = dmas[:5]
-
-            # normalize prior session value if present
             if "chosen_dmas" in st.session_state:
                 raw = st.session_state["chosen_dmas"]
                 if not isinstance(raw, list) or any(not isinstance(x, str) for x in raw):
@@ -834,6 +862,7 @@ with tab4:
                 st.write(f"Estimated conversions in duration (treatment): {total_n}")
                 st.write(f"Estimated MDE (approx): ±{round(mde*100,2)}%")
 
+            # Export + simulate activation (same behavior)
             st.markdown("---")
             st.markdown("**Export payload / Simulate activation**")
             notes = st.text_area("Notes (optional)", value="Prototype activation payload")
@@ -849,10 +878,8 @@ with tab4:
                 "assumptions": {"avg_order_value": avg_order_value, "baseline_conv_rate": conv_rate},
                 "notes": notes
             }
-
             st.code(payload, language="json")
 
-            # export button (save payload locally)
             if st.button("Export JSON / Save payload"):
                 filename = f"experiment_payload_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
                 with open(filename,"w") as f:
@@ -860,7 +887,6 @@ with tab4:
                 st.success(f"Payload written to {filename} (saved locally in app container).")
                 st.info("In production this payload would be posted to orchestration services.")
 
-            # Activation CTA (simulated)
             if st.button("Activate Test (Simulate API call)"):
                 act_fname = f"activated_experiment_{selected_campaign}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
                 try:
@@ -874,12 +900,12 @@ with tab4:
                 except Exception as e:
                     st.error(f"Activation simulation failed: {e}")
 
+        # Synthetic causal analysis unchanged (keeps synthetic run + export)
         else:
-            # Synthetic causal mode (explicit)
             st.markdown("### Synthetic Causal Analysis")
             causal_method = st.selectbox("Method", options=["Historical Bid/Spend Variation","Geo-Level Cross Section","Time-Series Structural Model"])
             hist_window = st.selectbox("Historical window", options=["90 days","180 days","365 days"])
-            avg_order_value = st.number_input("Assumed avg order value ($)", value=aov if 'aov' in locals() else 50.0, key="syn_aov")
+            avg_order_value = st.number_input("Assumed avg order value ($)", value=50.0, key="syn_aov")
             conv_rate = st.number_input("Baseline conv rate (decimal)", value=0.01, key="syn_conv")
             if st.button("Run Synthetic Causal Analysis"):
                 base_effect = c_row["marginal_roas"] * 0.02
@@ -909,3 +935,26 @@ with tab4:
                     with open(fname,"w") as f:
                         json.dump(payload, f, indent=2)
                     st.success(f"Synthetic payload written to {fname}.")
+
+    # ------------------------
+    # Tests table (designed / activated tests) — prototype-only (simulated data)
+    # ------------------------
+    st.markdown("---")
+    st.subheader("Designed & Activated tests (prototype view)")
+    # sample data for tests (in production this would come from the orchestration data store)
+    activated_tests = st.session_state.get("activated_tests", [
+        {"id": "sim-20260301-01", "campaign": "Brand US", "type": "Holdout", "status": "Design saved", "created_at": "2026-03-01"},
+        {"id": "sim-20260301-02", "campaign": "NonBrand US", "type": "Scale", "status": "Activated (sim)", "created_at": "2026-03-01"}
+    ])
+    tests_df = pd.DataFrame(activated_tests)
+    st.dataframe(tests_df, height=200)
+
+    # CTAs for tests: disabled in prototype
+    st.markdown("Actions (prototype):")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.button("Measure selected test", disabled=True)
+        st.caption("Disabled: measurement pipeline not connected in prototype.")
+    with c2:
+        st.button("View test results", disabled=True)
+        st.caption("Disabled: no completed tests available in prototype.")
